@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>杨幂 · AI 数字分身（技术测试）</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main>
+    <section class="stage">
+      <div id="avatar-video" class="avatar-video">
+        <div id="placeholder" class="placeholder">点击「开始视频通话」</div>
+      </div>
+      <div class="ai-badge">AI 数字分身 · 内容由人工智能生成</div>
+      <div id="self-video" class="self-video"></div>
+      <div id="status" class="status">未连接</div>
+      <div class="controls">
+        <label class="persona-pick">人设
+          <select id="persona-select"></select>
+        </label>
+        <button id="btn-start" class="primary">开始视频通话</button>
+        <button id="btn-mic" disabled>静音</button>
+        <button id="btn-cam" disabled>关摄像头</button>
+        <button id="btn-interrupt" disabled>打断</button>
+        <button id="btn-hangup" class="danger" disabled>挂断</button>
+      </div>
+    </section>
+
+    <aside class="side">
+      <h2>对话记录</h2>
+      <div id="transcript" class="transcript"></div>
+      <form id="text-form" class="text-form">
+        <input id="text-input" placeholder="也可以打字聊…" autocomplete="off" disabled />
+        <button disabled>发送</button>
+      </form>
+      <details class="memory">
+        <summary>她记得我什么？</summary>
+        <div class="row">
+          <button id="btn-mem-list">查看记忆</button>
+          <button id="btn-mem-clear" class="danger">忘记我</button>
+        </div>
+        <pre id="mem-out"></pre>
+        <small>用户 ID：<code id="uid"></code> · 人设：<code id="current-persona"></code></small>
+      </details>
+      <details class="memory clip">
+        <summary>切离线视频（测试）</summary>
+        <input id="clip-url" placeholder="离线视频 URL（http/https mp4）" />
+        <div class="row">
+          <button id="btn-clip-switch">先走出画面，4 秒后切视频</button>
+        </div>
+        <pre id="clip-out"></pre>
+        <small>动作：固定镜头，人物向左走出屏幕 · 不发 baseline_reset</small>
+      </details>
+    </aside>
+  </main>
+  <script src="/vendor/agora.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

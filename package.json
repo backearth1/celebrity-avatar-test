@@ -1,0 +1,19 @@
+{
+  "name": "yangmi-avatar-demo",
+  "version": "1.0.0",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "node server/server.js",
+    "kb:sync": "python3 scripts/kb_sync.py",
+    "avatar:upload": "node scripts/upload_avatar.mjs"
+  },
+  "dependencies": {
+    "agora-rtc-sdk-ng": "^4.24.9",
+    "dotenv": "^18.0.9",
+    "ws": "^8.22.0"
+  },
+  "type": "module",
+  "private": true
+}
