@@ -8,10 +8,19 @@ const ui = {
   avatar: $('avatar-video'), self: $('self-video'), placeholder: $('placeholder'),
 };
 
-// 记忆按用户隔离：浏览器本地生成一个稳定的 user_id
-const USER_ID = localStorage.getItem('yangmi_demo_uid') || `u-${crypto.randomUUID().slice(0, 18)}`;
-localStorage.setItem('yangmi_demo_uid', USER_ID);
-$('uid').textContent = USER_ID;
+// 身份由服务端签发（HttpOnly cookie），记忆和会话都只认它。
+// 旧版本存在 localStorage 的 user_id 作为 legacy 带上，服务端会尽量沿用，保住已有记忆。
+let USER_ID = '';
+let MAX_SECONDS = 300;
+const identityReady = (async () => {
+  const legacy = localStorage.getItem('yangmi_demo_uid') || '';
+  const d = await (await fetch(`/api/me?legacy=${encodeURIComponent(legacy)}`)).json();
+  USER_ID = d.user_id;
+  MAX_SECONDS = d.max_seconds || MAX_SECONDS;
+  localStorage.setItem('yangmi_demo_uid', USER_ID);
+  $('uid').textContent = USER_ID;
+  setStatus(`未连接 · 当前在线 ${d.active}/${d.max}`);
+})();
 
 // 人设选择：开始通话前切换，选中项存本地，下次默认还是它
 let PERSONA = localStorage.getItem('yangmi_persona') || '';
@@ -76,6 +85,27 @@ async function onStuck() {
   await hangup();
 }
 
+const HANGUP_TEXT = {
+  max_duration: () => `单次体验时长已到（${Math.round(MAX_SECONDS / 60)} 分钟），通话已结束。可以再点「开始视频通话」继续。`,
+  no_client: () => '连接超时，通话已结束。',
+  user_end: () => '通话结束。',
+  credit_insufficient: () => '平台积分不足，通话已结束。',
+  timeout: () => '长时间无输入，通话已结束。',
+};
+const hangupText = (r) => (HANGUP_TEXT[r] ? HANGUP_TEXT[r]() : `通话结束（${r || 'unknown'}）`);
+
+// 通话倒计时：服务端到点会主动挂断，这里只负责显示
+function startCountdown(endsAt) {
+  const tick = () => {
+    if (!state) return;
+    const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+    setStatus(`通话中 · 剩余 ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`);
+    if (left === 60) addMsg('sys', '还剩 1 分钟，到点会自动结束。');
+  };
+  tick();
+  state.countdown = setInterval(tick, 1000);
+}
+
 function connectWs() {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -98,7 +128,7 @@ function connectWs() {
           return reject(new Error(`conn_init 失败：${ack.error_code} ${ack.error_msg}`));
         }
         case 6:
-          addMsg('sys', `通话结束（${msg.payload?.hangup?.hangup_reason || 'unknown'}）`);
+          addMsg('sys', hangupText(msg.payload?.hangup?.hangup_reason));
           return teardown();
         case 9: return onTranscript('user', msg.payload);
         case 10: return onTranscript('ai', msg.payload);
@@ -137,11 +167,14 @@ async function start() {
   ui.start.disabled = true;
   setStatus('创建会话…');
   try {
+    await identityReady;
     const r = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: USER_ID, call_mode: 'video', persona: PERSONA }),
+      body: JSON.stringify({ call_mode: 'video', persona: PERSONA }),
     });
     const data = await r.json();
+    if (r.status === 429) throw new Error(`当前体验人数已满（${data.active}/${data.max}），请稍后再试。`);
+    if (r.status === 401) throw new Error('身份已失效，请刷新页面后再试。');
     if (!r.ok) throw new Error(`创建会话失败：${JSON.stringify(data.error)}`);
     state = { liveId: data.live_id, connId: `web-${Date.now()}`, seq: 0 };
     addMsg('sys', `会话 ${data.live_id} 已创建`);
@@ -149,8 +182,8 @@ async function start() {
     setStatus('连接中…');
     // WebSocket 与 RTC 并行建立，缺一不可
     await Promise.all([connectWs(), joinRtc(data.rtc)]);
-    setStatus('通话中');
     setInCall(true);
+    startCountdown(data.ends_at);
   } catch (e) {
     console.error(e);
     addMsg('sys', e.message);
@@ -165,6 +198,7 @@ async function teardown() {
   setInCall(false);
   if (!s) return;
   clearTimeout(s.echoTimer);
+  clearInterval(s.countdown);
   try { s.ws?.close(); } catch { /* ignore */ }
   for (const t of [s.mic, s.cam]) { try { t?.close(); } catch { /* ignore */ } }
   try { await s.client?.leave(); } catch { /* ignore */ }
@@ -226,13 +260,13 @@ $('btn-clip-switch').onclick = async () => {
 };
 
 $('btn-mem-list').onclick = async () => {
-  const r = await fetch(`/api/memory?user_id=${USER_ID}&persona=${PERSONA}`);
+  const r = await fetch(`/api/memory?persona=${PERSONA}`);
   const d = await r.json();
   $('mem-out').textContent = (d.results || []).map((m) => `· ${m.memory}`).join('\n') || JSON.stringify(d, null, 1);
 };
 $('btn-mem-clear').onclick = async () => {
   if (!confirm('确定让她忘记关于你的所有记忆吗？')) return;
-  const r = await fetch(`/api/memory?user_id=${USER_ID}&persona=${PERSONA}`, { method: 'DELETE' });
+  const r = await fetch(`/api/memory?persona=${PERSONA}`, { method: 'DELETE' });
   $('mem-out').textContent = r.ok ? '已清空' : `失败：${await r.text()}`;
 };
 

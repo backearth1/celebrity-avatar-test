@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { buildSessionBody, DEFAULT_PERSONA } from './session_config.js';
 import { PERSONAS, getPersona } from './personas.js';
 import { createActionPicker } from './text_action.js';
+import { createIdentity, createSessionLimiter } from './access.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const {
@@ -58,12 +59,39 @@ async function vidu(method, urlPath, body) {
 
 // 公网暴露时用 Basic Auth 保护，避免他人消耗积分
 const EXPECTED_AUTH = ACCESS_PASSWORD && `Basic ${Buffer.from(`${ACCESS_USER}:${ACCESS_PASSWORD}`).toString('base64')}`;
-// WS 代理只放行本服务创建的会话
-const ownLives = new Set();
-// 运行中的会话：live_id -> { send(msg), connId }，供服务端主动下发信令（切视频、动作）
-const liveSockets = new Map();
+// 身份：签名 cookie，记忆 / 会话 / 切视频都只认它
+const identity = createIdentity({ dataDir: path.join(ROOT, 'data'), secret: process.env.COOKIE_SECRET });
 
-const userIdOk = (id) => typeof id === 'string' && /^[\w-]{1,64}$/.test(id);
+// 会话配额：同时最多 N 路、单次最长 M 秒；到点或无人连接由 endSession 回收
+const limiter = createSessionLimiter({
+  maxConcurrent: Number(process.env.MAX_CONCURRENT_SESSIONS || 10),
+  maxSeconds: Number(process.env.MAX_SESSION_SECONDS || 300),
+  onExpire: (liveId, reason) => endSession(liveId, reason),
+});
+
+// 结束会话并让出名额。连着 WS 就经它挂断；没连就临时开一条 WS 发挂断，避免会话空跑计费
+function endSession(liveId, reason) {
+  const s = limiter.remove(liveId);
+  if (!s) return;
+  console.log(`live ${liveId} ended: ${reason} (active ${limiter.active()}/${limiter.maxConcurrent})`);
+  logEvent(liveId, { kind: 'session_end', reason });
+  if (s.sock) return s.sock.hangup(reason);
+  // 浏览器掉线时代理已补发挂断、上游已关闭时无需再挂；只有超时 / 一直没连上才另开连接去挂断
+  if (reason !== 'max_duration' && reason !== 'no_client') return;
+  const ws = new WebSocket(`wss://${VIDU_HOST}/live/ws/live/connect?live_id=${liveId}&conn_id=server-reaper`, { headers: AUTH });
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ type: 5, live_id: liveId, conn_id: 'server-reaper', seq_id: 1, payload: { hangup: { hangup_reason: 'user_end' } } }));
+    setTimeout(() => ws.close(), 1000);
+  });
+  ws.on('error', (e) => console.error(`reaper ${liveId}`, e.message));
+}
+
+// 需要身份的接口：没有有效 cookie 直接 401，提示刷新页面领取
+function requireUid(req, res) {
+  const uid = identity.fromRequest(req);
+  if (!uid) send(res, 401, { error: 'no identity, reload the page' });
+  return uid;
+}
 
 // 浏览器只在 HTTPS（或 localhost）下开放摄像头/麦克风，配置了证书就走 HTTPS
 const tls = TLS_CERT && TLS_KEY
@@ -82,30 +110,55 @@ const handler = async (req, res) => {
       return fs.createReadStream(path.join(ROOT, file)).pipe(res);
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/session') {
-      const { user_id, call_mode = 'video', persona = DEFAULT_PERSONA } = await readJson(req);
-      if (!userIdOk(user_id)) return send(res, 400, { error: 'invalid user_id' });
-      if (!PERSONAS[persona]) return send(res, 400, { error: `unknown persona: ${persona}` });
-      // 预取这位用户的长期记忆注入人设：模型不一定主动调用记忆检索，开场就该认得人
-      const mem = await vidu('POST', '/live/v1/memories/list', { user_id, agent_id: getPersona(persona).agentId, page: 1, page_size: 30 });
-      const memories = mem.status === 200 ? (mem.data.results || []).map((m) => m.memory) : [];
-      const body = buildSessionBody({ userId: user_id, callMode: call_mode, persona, memories });
-      const { status, data } = await vidu('POST', '/live/s_avatar/realtime', body);
-      if (status !== 200) {
-        console.error('create live failed', status, data);
-        return send(res, status, { error: data });
+    // 领取身份：页面加载时调用。legacy 是浏览器里旧的 localStorage user_id，用于保住已有记忆
+    if (req.method === 'GET' && url.pathname === '/api/me') {
+      let uid = identity.fromRequest(req);
+      const headers = { 'Content-Type': 'application/json; charset=utf-8' };
+      if (!uid) {
+        const issued = identity.issue(url.searchParams.get('legacy'));
+        uid = issued.uid;
+        headers['Set-Cookie'] = issued.cookie;
       }
-      ownLives.add(data.live.id);
-      logEvent(data.live.id, { kind: 'session', user_id, persona, request: { ...body, avatar: { ...body.avatar, persona: `<${body.avatar.persona.length} chars>` } } });
-      console.log(`live ${data.live.id} created for ${user_id} persona=${persona} (rtc=${data.rtc.provider})`);
-      return send(res, 200, { live_id: data.live.id, rtc: data.rtc, live_duration: data.live.live_duration });
+      res.writeHead(200, headers);
+      return res.end(JSON.stringify({ user_id: uid, active: limiter.active(), max: limiter.maxConcurrent, max_seconds: limiter.maxSeconds }));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/session') {
+      const user_id = requireUid(req, res);
+      if (!user_id) return;
+      const { call_mode = 'video', persona = DEFAULT_PERSONA } = await readJson(req);
+      if (!PERSONAS[persona]) return send(res, 400, { error: `unknown persona: ${persona}` });
+      // 先占名额再建会话，避免并发请求同时越过上限
+      if (!limiter.reserve()) {
+        return send(res, 429, { error: 'too_many_sessions', active: limiter.active(), max: limiter.maxConcurrent });
+      }
+      let committed = false;
+      try {
+        // 预取这位用户的长期记忆注入人设：模型不一定主动调用记忆检索，开场就该认得人
+        const mem = await vidu('POST', '/live/v1/memories/list', { user_id, agent_id: getPersona(persona).agentId, page: 1, page_size: 30 });
+        const memories = mem.status === 200 ? (mem.data.results || []).map((m) => m.memory) : [];
+        const body = buildSessionBody({ userId: user_id, callMode: call_mode, persona, memories });
+        const { status, data } = await vidu('POST', '/live/s_avatar/realtime', body);
+        if (status !== 200) {
+          console.error('create live failed', status, data);
+          return send(res, status, { error: data });
+        }
+        const s = limiter.commit(data.live.id, user_id);
+        committed = true;
+        logEvent(data.live.id, { kind: 'session', user_id, persona, request: { ...body, avatar: { ...body.avatar, persona: `<${body.avatar.persona.length} chars>` } } });
+        console.log(`live ${data.live.id} created for ${user_id} persona=${persona} (active ${limiter.active()}/${limiter.maxConcurrent})`);
+        return send(res, 200, { live_id: data.live.id, rtc: data.rtc, max_seconds: limiter.maxSeconds, ends_at: s.endsAt });
+      } finally {
+        if (!committed) limiter.release();
+      }
     }
 
     // 记忆：查看 / 清空（“忘记我”）
     if (url.pathname === '/api/memory') {
-      const userId = url.searchParams.get('user_id');
+      // 只操作自己的记忆：user_id 取自 cookie，忽略参数里传来的
+      const userId = requireUid(req, res);
+      if (!userId) return;
       const persona = url.searchParams.get('persona') || DEFAULT_PERSONA;
-      if (!userIdOk(userId)) return send(res, 400, { error: 'invalid user_id' });
       if (!PERSONAS[persona]) return send(res, 400, { error: `unknown persona: ${persona}` });
       if (req.method === 'GET') {
         const r = await vidu('POST', '/live/v1/memories/list', { user_id: userId, agent_id: getPersona(persona).agentId, page: 1, page_size: 50 });
@@ -120,10 +173,15 @@ const handler = async (req, res) => {
 
     // 离线视频切换：先下发"走出画面"动作，延迟后发 switch_avatar，期间不发 baseline_reset
     if (req.method === 'POST' && url.pathname === '/api/clip/switch') {
+      const uid = requireUid(req, res);
+      if (!uid) return;
       const { live_id, video_url, avatar_id, delay_ms } = await readJson(req);
       if (!/^\d+$/.test(live_id || '')) return send(res, 400, { error: 'invalid live_id' });
       if (!/^https?:\/\//.test(video_url || '')) return send(res, 400, { error: 'video_url must be http(s)' });
-      const sock = liveSockets.get(live_id);
+      const session = limiter.get(live_id);
+      // 不是自己的会话一律当不存在，不泄露别人的 live_id 是否在线
+      if (!session || session.owner !== uid) return send(res, 404, { error: 'live not found' });
+      const sock = session.sock;
       if (!sock) return send(res, 409, { error: 'live not connected (no active ws)' });
       const delay = Number(delay_ms ?? process.env.SWITCH_DELAY_MS ?? 4000);
       const targetAvatar = String(avatar_id || process.env.AVATAR_ID || '');
@@ -149,10 +207,6 @@ const handler = async (req, res) => {
       return send(res, 200, { ok: true, live_id, delay_ms: delay, avatar_id: targetAvatar, exit_action: exitText });
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/lives') {
-      return send(res, 200, { lives: [...liveSockets.keys()] });
-    }
-
     if (req.method === 'GET' && url.pathname === '/api/personas') {
       return send(res, 200, { default: DEFAULT_PERSONA, items: Object.entries(PERSONAS).map(([key, p]) => ({ key, label: p.label })) });
     }
@@ -171,7 +225,10 @@ wss.on('connection', (client, req) => {
   const url = new URL(req.url, 'http://x');
   const liveId = url.searchParams.get('live_id');
   const connId = url.searchParams.get('conn_id') || `app-${Date.now()}`;
-  if (!ownLives.has(liveId)) return client.close(1008, 'unknown live_id');
+  const session = limiter.get(liveId);
+  const uid = identity.fromRequest(req);
+  // 只能连自己创建、且还没结束的会话
+  if (!session || !uid || session.owner !== uid) return client.close(1008, 'unknown live_id');
 
   const upstream = new WebSocket(
     `wss://${VIDU_HOST}/live/ws/live/connect?live_id=${liveId}&conn_id=${encodeURIComponent(connId)}`,
@@ -233,23 +290,44 @@ wss.on('connection', (client, req) => {
     else pending.push(text);
   });
 
-  // 供 /api/clip/switch 主动下发
-  liveSockets.set(liveId, {
+  // 挂到会话上：供 /api/clip/switch 主动下发，以及到点 / 掉线时由服务端挂断
+  let ended = false;
+  session.sock = {
     connId,
     send: (msg) => {
       if (upstream.readyState !== WebSocket.OPEN) throw new Error('upstream ws not open');
       upstream.send(JSON.stringify(msg));
       logEvent(liveId, { kind: 'up', msg });
     },
-  });
+    hangup: (reason) => {
+      if (ended) return;
+      ended = true;
+      // 先告诉浏览器为什么结束（复用 type=6 结构），再挂断上游
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 6, live_id: liveId, payload: { hangup: { hangup_reason: reason } } }));
+      }
+      if (upstream.readyState === WebSocket.OPEN) {
+        upstream.send(JSON.stringify({ type: 5, live_id: liveId, conn_id: connId, seq_id: ++actionSeq, payload: { hangup: { hangup_reason: 'user_end' } } }));
+      }
+      setTimeout(() => closeBoth('server', 1000, reason), 500);
+    },
+  };
 
   const closeBoth = (who, code, reason) => {
-    liveSockets.delete(liveId);
+    // 浏览器掉线 / 关页面：服务端补发挂断，名额立即释放，会话不空跑计费
+    if (!ended) {
+      ended = true;
+      if (who === 'client' && upstream.readyState === WebSocket.OPEN) {
+        upstream.send(JSON.stringify({ type: 5, live_id: liveId, conn_id: connId, seq_id: ++actionSeq, payload: { hangup: { hangup_reason: 'user_end' } } }));
+      }
+      session.sock = null;
+      endSession(liveId, who === 'client' ? 'client_closed' : 'upstream_closed');
+    }
     clearInterval(heartbeat);
     clearTimeout(continueTimer);
     console.log(`ws ${liveId} closed by ${who} ${code ?? ''} ${reason || ''}`);
     if (client.readyState === WebSocket.OPEN) client.close(1000, `${who} closed`);
-    if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close();
+    if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) setTimeout(() => upstream.close(), 300);
   };
   upstream.on('close', (c, r) => closeBoth('upstream', c, r.toString()));
   upstream.on('error', (e) => { console.error('upstream error', e.message); closeBoth('upstream-error'); });

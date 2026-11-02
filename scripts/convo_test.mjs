@@ -6,10 +6,12 @@ const {default:WebSocket}=await import('ws');
 const [cred, uid, ...qs]=process.argv.slice(2);
 const auth='Basic '+Buffer.from(cred).toString('base64');
 const t0=Date.now(); const T=()=>((Date.now()-t0)/1000).toFixed(1).padStart(5);
-const r=await fetch(`${BASE}/api/session`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:auth},body:JSON.stringify({user_id:uid,call_mode:'video',persona:process.env.PERSONA||'clone'})});
+const me=await fetch(`${BASE}/api/me?legacy=${encodeURIComponent(uid)}`,{headers:{Authorization:auth}});
+const cookie=(me.headers.get('set-cookie')||'').split(';')[0];
+const r=await fetch(`${BASE}/api/session`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:auth,Cookie:cookie},body:JSON.stringify({call_mode:'video',persona:process.env.PERSONA||'clone'})});
 const d=await r.json(); if(!r.ok){console.log('session failed',JSON.stringify(d));process.exit(1)}
 const id=d.live_id; console.log('live',id); let seq=0, tries=0, qi=0, timer;
-const ws=new WebSocket(`${BASE.replace('https','wss')}/ws?live_id=${id}&conn_id=t`);
+const ws=new WebSocket(`${BASE.replace('https','wss')}/ws?live_id=${id}&conn_id=t`,{headers:{Authorization:auth,Cookie:cookie}});
 const S=(type,payload)=>ws.send(JSON.stringify({type,live_id:id,conn_id:'t',seq_id:++seq,payload}));
 const init=()=>S(1,{conn_init:{version:1}});
 const end=()=>{S(5,{hangup:{hangup_reason:'user_end'}});setTimeout(()=>process.exit(),1500)};
