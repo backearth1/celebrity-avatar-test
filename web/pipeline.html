@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>组件版 · 实时链路 / Component Pipeline</title>
+<link rel="stylesheet" href="/pipeline.css">
+</head>
+<body class="pl">
+<div class="app">
+
+  <header class="top">
+    <a class="logo" href="/"><b id="brand-name">幂幂</b> 数字分身 · 组件版</a>
+    <div class="bar">
+      <label class="persona"><span>人设</span><select id="persona-sel"></select></label>
+      <input id="say" placeholder="打字或按 🎤 说话，链路会实时走一遍…" autocomplete="off">
+      <button id="btn-send" class="btn p">发送</button>
+      <button id="btn-mic" class="btn">🎤 说话</button>
+      <button id="btn-start" class="btn p2">开始会话</button>
+      <button id="btn-hangup" class="btn">挂断</button>
+    </div>
+    <div class="r">
+      <span class="pill" id="conn">未连接</span>
+      <a class="pill" href="/" style="text-decoration:none;color:inherit">← 通话</a>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- 左：节点图 + 事件时间轴 -->
+    <section class="left">
+      <div class="board">
+        <div class="board-h">
+          <span class="t">一次对话，真实走过哪些节点</span>
+          <span class="legend" id="legend"></span>
+        </div>
+        <div class="svgwrap"><svg id="svg" viewBox="0 0 1290 470" preserveAspectRatio="xMidYMid meet"></svg></div>
+      </div>
+      <div class="pane">
+        <div class="pane-h">实时事件 <span id="cnt" class="mut">0</span>
+          <label class="live"><input type="checkbox" id="follow" checked> 跟随最新</label>
+        </div>
+        <ol class="steps" id="steps"><li class="empty">点「开始会话」，然后打字或说话。</li></ol>
+      </div>
+    </section>
+
+    <!-- 右：画面 + 节点输入输出（固定在这里，不滚动整页） -->
+    <aside class="right">
+      <div class="pane">
+        <div class="pane-h">渲染侧画面 <span id="rtc" class="mut">未订阅</span></div>
+        <div class="mini">
+          <div id="avatar-video"></div>
+          <div id="ph" class="ph">开始会话后显示</div>
+        </div>
+      </div>
+      <div class="pane art" id="art">
+        <div class="art-inner">
+          <p class="desc">点「开始会话」，然后打字或说话。<br>左边每个节点亮起时，这里显示它<b>这一次</b>真实的输入与输出；点任意节点或事件可回看。</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+</div>
+<script src="/vendor/agora.js"></script>
+<script src="/vendor/trtc.js"></script>
+<script src="/pipeline.js"></script>
+</body>
+</html>

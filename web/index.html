@@ -43,6 +43,17 @@
         <pre id="mem-out"></pre>
         <small>用户 ID：<code id="uid"></code> · 人设：<code id="current-persona"></code></small>
       </details>
+      <details class="memory rec">
+        <summary>录像</summary>
+        <div class="row">
+          <button id="btn-rec" disabled>开始录像</button>
+          <span id="rec-state">未开始</span>
+        </div>
+        <div class="row">
+          <button id="btn-rec-list">查看历史录像</button>
+        </div>
+        <small>服务端录制：平台整场生成，通话结束后通常 1 分钟内出现在列表里。</small>
+      </details>
       <details class="memory clip">
         <summary>切离线视频（测试）</summary>
         <input id="clip-url" placeholder="离线视频 URL（http/https mp4）" />
@@ -54,7 +65,29 @@
       </details>
     </aside>
   </main>
+
+  <div id="rec-modal" class="rec-modal" hidden>
+    <div class="rec-box">
+      <div class="rec-head">
+        <strong>历史录像</strong>
+        <button id="rec-close">关闭</button>
+      </div>
+      <div class="rec-body">
+        <div id="rec-list" class="rec-list"></div>
+        <div class="rec-play">
+          <video id="rec-video" controls playsinline></video>
+          <div id="rec-meta" class="rec-meta">选一条录像播放</div>
+          <div class="row">
+            <a id="rec-download" class="linkbtn" href="#" download hidden>下载</a>
+            <button id="rec-delete" class="danger" disabled>删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/vendor/agora.js"></script>
+  <script src="/vendor/trtc.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

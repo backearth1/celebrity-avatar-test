@@ -1,0 +1,12 @@
+[
+  { "name": "整理袖口", "content": "抬起右手，慢慢把左手西装袖口拉平整，再把手放回身前", "weight": 2, "description": "安静等待、准备开口时" },
+  { "name": "双手交叠", "content": "双手在身前交叠，拇指轻轻扣在一起，目光一直看着镜头", "weight": 2, "description": "沉默、听对方说话时" },
+  { "name": "缓一口气", "content": "双肩缓缓下沉，胸口起伏一下，像把呼吸压稳", "weight": 1.5, "description": "停顿较久、压着情绪时" },
+  { "name": "偏头注视", "content": "头慢慢偏向一侧，下颌微微收紧，眼睛盯着镜头不动", "weight": 2, "description": "打量对方、思考时" },
+  { "name": "抚平衣领", "content": "抬起右手，把西装领口轻轻抚平，再把手放下", "weight": 1.5, "description": "整理状态、准备认真说话时" },
+  { "name": "握拳再松开", "content": "双手在身前慢慢握成拳，停一下，再松开", "weight": 1, "description": "压抑、忍耐心绪时" },
+  { "name": "移开视线", "content": "目光从镜头移开一点，像在听什么，几秒后重新看向镜头", "weight": 1.5, "description": "回忆、沉默时" },
+  { "name": "指背碰下巴", "content": "抬起右手，用指背轻轻碰了一下下巴，若有所思", "weight": 1.5, "description": "思考、等对方回答时" },
+  { "name": "拉直衣摆", "content": "双手抓住西装下摆，轻轻往下一拉，把衣服拉直", "weight": 1, "description": "聊天间隙、整理仪态" },
+  { "name": "轻轻点头", "content": "很轻地点了一下头，脸上没有多余表情", "weight": 1, "description": "对方说完、表示听到了" }
+]

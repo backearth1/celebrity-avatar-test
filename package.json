@@ -12,6 +12,7 @@
   "dependencies": {
     "agora-rtc-sdk-ng": "^4.24.9",
     "dotenv": "^18.0.9",
+    "trtc-sdk-v5": "^5.20.2",
     "ws": "^8.22.0"
   },
   "type": "module",

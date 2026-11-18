@@ -1,7 +1,7 @@
 // 创建 Live 会话的请求体。人设 / 知识库 / 记忆相关的可调参数集中在这里。
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadSharedMemories, read, DEFAULT_PERSONA, getPersona } from './personas.js';
+import { loadSharedMemories, read, DEFAULT_PERSONA, getPersona, isAnnePersona, isGirlfriendPersona, isIpPersona } from './personas.js';
 
 const env = process.env;
 
@@ -25,12 +25,12 @@ const MEMORY_TOOL_INSTRUCTION = `
 
 function memorySection(memories, personaKey) {
   if (!memories.length) {
-    return personaKey === 'girlfriend'
+    return isGirlfriendPersona(personaKey)
       ? '\n\n# 他最近的情况\n你们是恋人，但你还不知道他最近发生了什么。开场自然地问问他今天过得怎么样。'
       : '\n\n# 这位朋友\n第一次见面。开场打完招呼，问问怎么称呼对方。';
   }
   const joined = memories.map((m) => `- ${m}`).join('\n');
-  return personaKey === 'girlfriend'
+  return isGirlfriendPersona(personaKey)
     ? `\n\n# 他最近的情况（你们聊天时提过的，你记得）\n${joined}\n`
       + '自然地带出来，像女朋友记得男朋友的事，不要像在复述档案。'
     : `\n\n# 这位朋友（你们聊过，你记得这些）\n${joined}\n`
@@ -53,15 +53,20 @@ const GIRLFRIEND_KB_INSTRUCTION = `
 
 export function buildSessionBody({ userId, callMode = 'video', persona = DEFAULT_PERSONA, memories = [] }) {
   const cfg = getPersona(persona);
+  // 形象/音色按人设覆盖：ANNE_AVATAR_ID / ANNE_VOICE 存在就优先用。
+  // 不做这层的话，选了安妮仍然用全局 AVATAR_ID + AVATAR_VOICE —— 画面上是杨幂、声音也是杨幂。
+  const avatarId = cfg.avatarIdEnv ? env[cfg.avatarIdEnv] : '';
+  const voiceId = cfg.voiceEnv ? env[cfg.voiceEnv] : '';
   const avatar = {
     persona: applySharedMemories(read(persona, cfg.personaFile), persona) + memorySection(memories, persona),
     greeting_instruction: read(persona, 'greeting.txt'),
     action_prompt: read(persona, 'action_prompt.txt'),
-    voice: env.AVATAR_VOICE || 'Maia',
+    voice: voiceId || env.AVATAR_VOICE || 'Maia',
     farewell_enabled: true,
     persona_enhance: false, // 精品人设：人工打磨，不让平台扩写
   };
-  if (env.AVATAR_ID) avatar.id = env.AVATAR_ID;
+  if (avatarId) avatar.id = avatarId;
+  else if (env.AVATAR_ID) avatar.id = env.AVATAR_ID;
   else if (env.AVATAR_IMAGE_URI) avatar.image_uri = env.AVATAR_IMAGE_URI;
   else throw new Error('请在 .env 设置 AVATAR_ID（scripts/upload_avatar.mjs 上传后获得）或 AVATAR_IMAGE_URI');
 
@@ -91,11 +96,14 @@ export function buildSessionBody({ userId, callMode = 'video', persona = DEFAULT
     idle_timeout_seconds: Number(env.IDLE_TIMEOUT_SECONDS || 600),
     enable_recording: env.ENABLE_RECORDING === 'true',
     knowledge_retrieval: {
-      enabled: true,
+      // 平台知识库目前只有杨幂的（VIDU_KB_ID）。安妮在标准版里直接关掉，
+      // 否则问她电影，检索到的是杨幂的资料。组件版走本地 personas/anne 知识库。
+      // IP 人物（John Wick）没有知识库，背景全在 persona 里，同样关掉。
+      enabled: !isAnnePersona(persona) && !isIpPersona(persona),
       provider: 'vidu',
       knowledge_base_id: env.VIDU_KB_ID,
       force_search: env.KB_FORCE_SEARCH === 'true', // 每轮强制检索：更准，但每轮多一次检索延迟
-      tool_instruction: persona === 'girlfriend' ? GIRLFRIEND_KB_INSTRUCTION : KNOWLEDGE_TOOL_INSTRUCTION,
+      tool_instruction: isGirlfriendPersona(persona) ? GIRLFRIEND_KB_INSTRUCTION : KNOWLEDGE_TOOL_INSTRUCTION,
     },
     memory_retrieval: {
       enabled: true,

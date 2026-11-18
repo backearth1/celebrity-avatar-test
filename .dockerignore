@@ -1,0 +1,13 @@
+node_modules/
+recordings/
+logs/
+data/
+certs/
+.git/
+.env
+.env.*
+*.md
+!README.md
+docs/
+scripts/*.mjs.bak
+tools/

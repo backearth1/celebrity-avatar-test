@@ -4,3 +4,4 @@ logs/
 certs/
 .env.*
 data/
+recordings/

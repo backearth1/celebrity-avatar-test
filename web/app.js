@@ -6,6 +6,7 @@ const ui = {
   start: $('btn-start'), mic: $('btn-mic'), cam: $('btn-cam'), interrupt: $('btn-interrupt'), hangup: $('btn-hangup'),
   status: $('status'), transcript: $('transcript'), form: $('text-form'), input: $('text-input'),
   avatar: $('avatar-video'), self: $('self-video'), placeholder: $('placeholder'),
+  rec: $('btn-rec'), recState: $('rec-state'), recListBtn: $('btn-rec-list'),
 };
 
 // 身份由服务端签发（HttpOnly cookie），记忆和会话都只认它。
@@ -25,17 +26,25 @@ const identityReady = (async () => {
 // 人设选择：开始通话前切换，选中项存本地，下次默认还是它
 let PERSONA = localStorage.getItem('yangmi_persona') || '';
 const personaSelect = $('persona-select');
+// 标签页标题跟着人设走：选了安妮还写着"杨幂"会让人以为没切过去
+function paintTitle() {
+  const label = personaSelect.selectedOptions?.[0]?.textContent || '';
+  const short = label.split('·')[0].trim();
+  document.title = short ? `${short} · AI 数字分身（技术测试）` : 'AI 数字分身（技术测试）';
+}
 (async () => {
   const d = await (await fetch('/api/personas')).json();
   personaSelect.innerHTML = d.items.map((p) => `<option value="${p.key}">${p.label}</option>`).join('');
   personaSelect.value = d.items.some((p) => p.key === PERSONA) ? PERSONA : d.default;
   PERSONA = personaSelect.value;
   $('current-persona').textContent = PERSONA;
+  paintTitle();
 })();
 personaSelect.onchange = () => {
   PERSONA = personaSelect.value;
   localStorage.setItem('yangmi_persona', PERSONA);
   $('current-persona').textContent = PERSONA;
+  paintTitle();
   // 记忆按人设分区，切换后要把已显示的旧记忆清掉
   $('mem-out').textContent = '';
 };
@@ -57,9 +66,15 @@ function addMsg(role, text) {
 
 function setInCall(on) {
   ui.start.disabled = on;
-  for (const b of [ui.mic, ui.cam, ui.interrupt, ui.hangup]) b.disabled = !on;
+  for (const b of [ui.interrupt, ui.hangup]) b.disabled = !on;
+  // 本地预览可能被浏览器拒绝（没有摄像头/麦克风），没有轨道就别让按钮可点
+  ui.mic.disabled = !on || !state?.mic;
+  ui.cam.disabled = !on || !state?.cam;
+  // 录像目前只对组件版生效（标准版没有时间窗打点）
+  ui.rec.disabled = !on || state?.mode !== 'component';
   ui.input.disabled = !on;
   ui.form.querySelector('button').disabled = !on;
+  paintRec(false, 0);
 }
 
 function sendSignal(type, payload = {}) {
@@ -142,14 +157,29 @@ function connectWs() {
 }
 
 async function joinRtc(rtc) {
+  // 组件版优先 TRTC：平台录制只有 managed_rtc.provider=trtc 能稳定出片。
+  // 标准版仍然用 Agora（rtc.provider 为 artc/agora 或未下发）。
+  if (rtc.provider === 'trtc') {
+    if (!window.TRTC) throw new Error('TRTC SDK 未加载，请刷新页面');
+    return joinTrtc(rtc);
+  }
+  return joinAgora(rtc);
+}
+
+async function joinAgora(rtc) {
   const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
   state.client = client;
+  const playedAudio = new Set();   // 已播放过音频的远端 uid，防止重复 play() 叠音
   client.on('user-published', async (user, mediaType) => {
     await client.subscribe(user, mediaType);
     if (mediaType === 'video') {
       ui.placeholder.style.display = 'none';
       user.videoTrack.play(ui.avatar, { fit: 'contain' });
-    } else {
+    } else if (user.audioTrack && !playedAudio.has(user.uid)) {
+      // 她的声音来自 audioTrack（实测：不播它就完全没声，说明视频元素本身不带音频）。
+      // 用 uid 去重：user-published 可能对同一个远端用户重复触发，
+      // 重复调用 play() 会叠出多路音频元素 → 听感就是"同一句说了两遍"。
+      playedAudio.add(user.uid);
       user.audioTrack.play();
     }
   });
@@ -161,6 +191,52 @@ async function joinRtc(rtc) {
   state.cam = await AgoraRTC.createCameraVideoTrack({ encoderConfig: '480p_1' });
   state.cam.play(ui.self);
   await client.publish([state.mic, state.cam]);
+}
+
+// TRTC Web SDK v5：组件版只需要"看/听"数字人，不推流。
+// 浏览器自己的摄像头只做本地预览（组件版数字人不用用户画面，语音识别走浏览器 ASR）。
+async function joinTrtc(rtc) {
+  const trtc = window.TRTC.create();
+  state.trtc = trtc;
+  trtc.on(window.TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, async ({ userId, streamType }) => {
+    try {
+      await trtc.startRemoteVideo({ userId, streamType, view: ui.avatar, option: { fillMode: 'contain' } });
+      ui.placeholder.style.display = 'none';
+    } catch (e) { console.error('startRemoteVideo', e); }
+  });
+  trtc.on(window.TRTC.EVENT.REMOTE_USER_LEAVE, () => setStatus('数字人已离开'));
+  trtc.on(window.TRTC.EVENT.ERROR, (e) => console.error('TRTC', e));
+  // 远端音频默认自动播放；四个参数原样取自 rtc，userId/strRoomId 不能改写
+  await trtc.enterRoom({
+    sdkAppId: Number(rtc.app_id),
+    userId: rtc.user_id,
+    userSig: rtc.token,
+    strRoomId: rtc.channel_id,
+  });
+  await localPreview();
+}
+
+// 本地摄像头预览（不发布）。包一层 setMuted/close，和 Agora track 的接口保持一致，
+// 这样"静音/关摄像头"两个按钮不用改。
+async function localPreview() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360 }, audio: true });
+    const v = document.createElement('video');
+    v.autoplay = true; v.muted = true; v.playsInline = true; v.srcObject = stream;
+    v.style.width = '100%'; v.style.height = '100%'; v.style.objectFit = 'cover';
+    ui.self.innerHTML = '';
+    ui.self.appendChild(v);
+    const at = stream.getAudioTracks()[0];
+    const vt = stream.getVideoTracks()[0];
+    state.mic = at ? { setMuted: (m) => { at.enabled = !m; }, close: () => at.stop() } : null;
+    state.cam = vt ? { setMuted: (m) => { vt.enabled = !m; }, close: () => vt.stop() } : null;
+    ui.mic.disabled = !at;
+    ui.cam.disabled = !vt;
+  } catch (e) {
+    console.warn('local preview unavailable', e);
+    ui.mic.disabled = true;
+    ui.cam.disabled = true;
+  }
 }
 
 async function start() {
@@ -176,12 +252,19 @@ async function start() {
     if (r.status === 429) throw new Error(`当前体验人数已满（${data.active}/${data.max}），请稍后再试。`);
     if (r.status === 401) throw new Error('身份已失效，请刷新页面后再试。');
     if (!r.ok) throw new Error(`创建会话失败：${JSON.stringify(data.error)}`);
-    state = { liveId: data.live_id, connId: `web-${Date.now()}`, seq: 0 };
+    state = { liveId: data.live_id, connId: `web-${Date.now()}`, seq: 0, mode: data.mode || 'standard', localUserEcho: [] };
     addMsg('sys', `会话 ${data.live_id} 已创建`);
 
     setStatus('连接中…');
-    // WebSocket 与 RTC 并行建立，缺一不可
-    await Promise.all([connectWs(), joinRtc(data.rtc)]);
+    if (state.mode === 'component') {
+      // 组件版：控制 WS 在服务端，浏览器只订阅画面 + 轮询字幕 + 本地语音识别
+      await joinRtc(data.rtc);
+      startEventPolling();
+      startSpeech();
+    } else {
+      // 标准版：WebSocket 与 RTC 并行建立，缺一不可
+      await Promise.all([connectWs(), joinRtc(data.rtc)]);
+    }
     setInCall(true);
     startCountdown(data.ends_at);
   } catch (e) {
@@ -192,37 +275,296 @@ async function start() {
   }
 }
 
+// ---- 组件版：字幕来自服务端事件队列（浏览器不持有控制 WS）----
+const COMPONENT = () => state?.mode === 'component';
+
+function startEventPolling() {
+  let since = 0;
+  const tick = async () => {
+    if (!state || !COMPONENT()) return;
+    try {
+      const r = await fetch(`/api/component/events?live_id=${state.liveId}&since=${since}`);
+      if (r.ok) {
+        const d = await r.json();
+        for (const e of d.events || []) {
+          since = e.i + 1;
+          if (e.kind === 'user') {
+            // 用户消息在发送时已经本地上屏（sendUserText），服务端这条只是回显。
+            // 抵消掉对应的一条本地记录，否则同一句话会显示两遍。
+            const i = state.localUserEcho.indexOf(e.text);
+            if (i >= 0) state.localUserEcho.splice(i, 1);
+            else addMsg('user', e.text);
+          } else if (e.kind === 'assistant') {
+            // 直接显示模型原样输出（含 [动作:...] 标记和语气音），动作内容也就一起看到了
+            addMsg('ai', e.raw || e.text);
+          } else if (e.kind === 'error') addMsg('sys', `错误：${e.error}`);
+          else if (e.kind === 'first_audio') setStatus(`通话中 · 首字 ${e.ms}ms`);
+        }
+      } else if (r.status === 404) {
+        addMsg('sys', '会话已结束');
+        return teardown();
+      }
+    } catch { /* 网络抖动，下一轮再试 */ }
+    state.poll = setTimeout(tick, 700);
+  };
+  tick();
+}
+
+// ---- 组件版：浏览器语音识别（Web Speech）。组件版没有平台 ASR ----
+let recognition = null;
+function startSpeech() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addMsg('sys', '这个浏览器不支持语音识别，请用 Chrome/Edge，或直接打字。'); return; }
+  recognition = new SR();
+  recognition.lang = 'zh-CN';
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.onresult = (ev) => {
+    for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+      if (!ev.results[i].isFinal) continue;
+      const text = ev.results[i][0].transcript.trim();
+      if (text) sendUserText(text);
+    }
+  };
+  // 识别会自己停，停了就重启（直到挂断）
+  recognition.onend = () => { if (state && COMPONENT()) { try { recognition.start(); } catch { /* ignore */ } } };
+  recognition.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') console.warn('speech', e.error); };
+  try { recognition.start(); } catch { /* ignore */ }
+}
+
+async function sendUserText(text) {
+  if (!state) return;
+  if (!COMPONENT()) {
+    // 标准版：走控制 WS 的 type=99
+    sendSignal(99, { text_msg: { msg_id: `m-${Date.now()}`, content: text, timestamp: Date.now() } });
+    clearTimeout(state.echoTimer);
+    state.echoTimer = setTimeout(onStuck, ECHO_TIMEOUT_MS);
+    return;
+  }
+  addMsg('user', text);
+  state.localUserEcho.push(text);   // 等轮询拿到服务端的同一条回显后再抵消
+  try {
+    await fetch('/api/component/say', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ live_id: state.liveId, text }),
+    });
+  } catch (e) { addMsg('sys', `发送失败：${e.message}`); }
+}
+
 async function teardown() {
   const s = state;
   state = null;
   setInCall(false);
   if (!s) return;
   clearTimeout(s.echoTimer);
+  clearTimeout(s.poll);
   clearInterval(s.countdown);
+  clearInterval(s.recTimer);
+  // 组件版：停掉语音识别（否则 onend 会无限重启）
+  if (recognition) { try { recognition.onend = null; recognition.stop(); } catch { /* ignore */ } recognition = null; }
   try { s.ws?.close(); } catch { /* ignore */ }
   for (const t of [s.mic, s.cam]) { try { t?.close(); } catch { /* ignore */ } }
   try { await s.client?.leave(); } catch { /* ignore */ }
+  try { await s.trtc?.exitRoom(); } catch { /* ignore */ }
   ui.placeholder.style.display = '';
   ui.self.innerHTML = '';
   setStatus('未连接');
 }
 
+// ---- 服务端录像 ----
+// 平台只能在建会话时决定"整场录制"，不能中途开关。这里的开始/停止只是记时间窗：
+// 通话结束后服务端把整段 MP4 拿下来，裁掉窗口之外的部分再存到本地。
+let recordingOn = false;
+
+function paintRec(on, startedAt) {
+  recordingOn = on;
+  ui.rec.textContent = on ? '停止录像' : '开始录像';
+  ui.rec.classList.toggle('live', on);
+  ui.recState.classList.toggle('live', on);
+  clearInterval(state?.recTimer);
+  if (state) state.recTimer = null;
+  if (!on) {
+    ui.recState.textContent = startedAt ? '已停止 · 结束后生成' : '未开始';
+    return;
+  }
+  const tick = () => {
+    const s = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    ui.recState.textContent = `录制中 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  tick();
+  if (state) state.recTimer = setInterval(tick, 1000);
+}
+
+ui.rec.onclick = async () => {
+  if (!state) return;
+  const starting = !recordingOn;
+  ui.rec.disabled = true;
+  try {
+    const r = await fetch(`/api/record/${starting ? 'start' : 'stop'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ live_id: state.liveId }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    paintRec(d.recording, d.started_at);
+    if (!d.recording) addMsg('sys', '录像已停止。通话结束后会在「历史录像」里生成。');
+  } catch (e) {
+    addMsg('sys', `录像操作失败：${e.message}`);
+  } finally {
+    ui.rec.disabled = !state;
+  }
+};
+
+// ---- 历史录像：列表 / 播放 / 下载 / 删除 ----
+const recModal = $('rec-modal');
+const recVideo = $('rec-video');
+const recMetaEl = $('rec-meta');
+const recDownload = $('rec-download');
+const recDelete = $('rec-delete');
+let recItems = [];
+let recSelected = '';
+let recListTimer = null;
+
+const fmtTime = (ts) => new Date(ts).toLocaleString('zh-CN', { hour12: false });
+const fmtDur = (ms) => {
+  const s = Math.max(0, Math.round((ms || 0) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+const fmtSize = (b) => (!b ? '' : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`);
+const STATUS_TEXT = { processing: '生成中…', downloading: '下载中…', ready: '可播放', failed: '失败' };
+
+function renderRecList() {
+  const box = $('rec-list');
+  box.innerHTML = '';
+  if (!recItems.length) {
+    const d = document.createElement('div');
+    d.className = 'rec-empty';
+    d.textContent = '还没有录像';
+    box.appendChild(d);
+    return;
+  }
+  for (const m of recItems) {
+    const b = document.createElement('button');
+    b.className = `rec-item${m.id === recSelected ? ' sel' : ''}`;
+    b.dataset.id = m.id;
+    const t = document.createElement('div');
+    t.className = 'rec-item-time';
+    t.textContent = fmtTime(m.created_at);
+    const sub = document.createElement('div');
+    sub.className = 'rec-item-sub';
+    sub.textContent = `${m.persona_label || m.persona || ''} · ${STATUS_TEXT[m.status] || m.status}${m.status === 'ready' ? ` · ${fmtDur(m.duration_ms)} · ${fmtSize(m.size)}` : ''}`;
+    b.append(t, sub);
+    if (m.status === 'failed' && m.error) b.title = m.error;
+    b.onclick = () => selectRec(m);
+    box.appendChild(b);
+  }
+}
+
+function selectRec(m) {
+  recSelected = m.id;
+  renderRecList();
+  if (m.status !== 'ready') {
+    recVideo.removeAttribute('src');
+    recVideo.load();
+    recMetaEl.textContent = m.status === 'failed'
+      ? `生成失败：${m.error || '未知原因'}`
+      : '服务端正在生成/下载这段录像，稍等一下…';
+    recDownload.hidden = true;
+    recDelete.disabled = false;
+    return;
+  }
+  recVideo.src = m.url;
+  recMetaEl.textContent = `${fmtTime(m.created_at)} · ${m.persona_label || ''} · ${fmtDur(m.duration_ms)} · ${fmtSize(m.size)}`;
+  recDownload.href = m.download_url;
+  recDownload.download = `avatar-${m.id}.mp4`;
+  recDownload.hidden = false;
+  recDelete.disabled = false;
+}
+
+async function loadRecordings() {
+  try {
+    const r = await fetch('/api/recordings');
+    if (!r.ok) return;
+    const d = await r.json();
+    recItems = d.items || [];
+    renderRecList();
+    // 选中的那条状态变了（生成中 → 可播放）就自动刷新播放器
+    const sel = recItems.find((x) => x.id === recSelected);
+    if (sel && sel.status === 'ready' && recVideo.getAttribute('src') !== sel.url) selectRec(sel);
+  } catch { /* 网络抖动，下次再拉 */ }
+}
+
+function openRecModal() {
+  recModal.hidden = false;
+  loadRecordings();
+  clearInterval(recListTimer);
+  recListTimer = setInterval(loadRecordings, 5000);
+}
+function closeRecModal() {
+  recModal.hidden = true;
+  clearInterval(recListTimer);
+  recListTimer = null;
+}
+
+ui.recListBtn.onclick = openRecModal;
+$('rec-close').onclick = closeRecModal;
+recModal.onclick = (e) => { if (e.target === recModal) closeRecModal(); };
+
+recDelete.onclick = async () => {
+  if (!recSelected) return;
+  if (!confirm('确定删除这条录像吗？文件会从服务器上删掉。')) return;
+  const r = await fetch(`/api/recordings/${recSelected}`, { method: 'DELETE' });
+  if (!r.ok) { recMetaEl.textContent = `删除失败：HTTP ${r.status}`; return; }
+  recVideo.removeAttribute('src');
+  recVideo.load();
+  recMetaEl.textContent = '已删除';
+  recDownload.hidden = true;
+  recDelete.disabled = true;
+  recSelected = '';
+  await loadRecordings();
+};
+
 async function hangup() {
+  if (recordingOn) addMsg('sys', '录像已停止，服务端会在通话结束后生成文件，稍后可在「历史录像」查看。');
+  if (COMPONENT()) {
+    try {
+      await fetch('/api/component/hangup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ live_id: state.liveId }),
+      });
+    } catch { /* 已断开 */ }
+    await new Promise((r) => setTimeout(r, 300));
+    return teardown();
+  }
   sendSignal(5, { hangup: { hangup_reason: 'user_end' } });
   // 文档建议：先关 WebSocket，再离开 RTC 频道。留一点时间给可能的告别视频
   await new Promise((r) => setTimeout(r, 300));
   await teardown();
 }
 
+async function interrupt() {
+  if (!state) return;
+  if (COMPONENT()) {
+    await fetch('/api/component/interrupt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ live_id: state.liveId }),
+    }).catch(() => {});
+    return;
+  }
+  sendSignal(7);
+}
+
 ui.start.onclick = start;
 ui.hangup.onclick = hangup;
-ui.interrupt.onclick = () => sendSignal(7);
+ui.interrupt.onclick = interrupt;
 ui.mic.onclick = async () => {
+  if (!state?.mic) return;
   const muted = ui.mic.textContent === '取消静音';
   await state.mic.setMuted(!muted);
   ui.mic.textContent = muted ? '静音' : '取消静音';
 };
 ui.cam.onclick = async () => {
+  if (!state?.cam) return;
   const off = ui.cam.textContent === '开摄像头';
   await state.cam.setMuted(!off);
   ui.cam.textContent = off ? '关摄像头' : '开摄像头';
@@ -230,12 +572,13 @@ ui.cam.onclick = async () => {
 ui.form.onsubmit = (e) => {
   e.preventDefault();
   const content = ui.input.value.trim();
-  if (!content) return;
-  // 不在本地回显：服务端会以 type=9 把这条文本回传，统一由转写渲染
+  if (!content || !state) return;
+  ui.input.value = '';
+  if (state.mode === 'component') { sendUserText(content); return; }
+  // 标准版不在本地回显：服务端会以 type=9 把这条文本回传，统一由转写渲染
   sendSignal(99, { text_msg: { msg_id: `m-${Date.now()}`, content, timestamp: Date.now() } });
   clearTimeout(state.echoTimer);
   state.echoTimer = setTimeout(onStuck, ECHO_TIMEOUT_MS);
-  ui.input.value = '';
 };
 
 $('btn-clip-switch').onclick = async () => {
@@ -271,3 +614,4 @@ $('btn-mem-clear').onclick = async () => {
 };
 
 window.addEventListener('beforeunload', () => { if (state) sendSignal(5, { hangup: { hangup_reason: 'user_end' } }); });
+

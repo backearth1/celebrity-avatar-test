@@ -1,0 +1,132 @@
+:root {
+  --bg: #07080d; --panel: #0b0d15; --line: #1e2230; --mut: #7d859b; --fg: #e8ecf6;
+  --v: #8b7bff; --c: #ffb02e; --x: #3da9ff;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body.pl { margin: 0; background: var(--bg); color: var(--fg); overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+a { color: inherit; text-decoration: none; }
+
+/* 整页固定一屏：header 固定高度，main 占满剩余，内部各栏自己滚动 */
+.app { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+
+.top { display: flex; align-items: center; gap: 14px; padding: 9px 18px;
+  border-bottom: 1px solid var(--line); background: #07080df2; }
+.logo { font-size: 14px; white-space: nowrap; }
+.logo b { color: #fff; }
+.bar { display: flex; gap: 7px; align-items: center; flex: 1; min-width: 0; }
+.bar .persona { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mut); white-space: nowrap; }
+.bar .persona select { background: #141725; border: 1px solid var(--line); color: var(--fg);
+  border-radius: 8px; padding: 7px 9px; font-size: 13px; max-width: 190px; }
+.bar .persona select:disabled { opacity: .5; }
+.bar input { flex: 1; min-width: 120px; background: #141725; border: 1px solid var(--line);
+  color: var(--fg); border-radius: 8px; padding: 7px 11px; font-size: 13.5px; }
+.bar input:focus { outline: none; border-color: #4a5a86; }
+.btn { background: #1b2032; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 13px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: #3a4460; }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.p { background: #fff; color: #000; border-color: #fff; }
+.btn.p2 { background: #8b7bff; color: #fff; border-color: #8b7bff; }
+.btn.on { background: #ff4d4d; border-color: #ff4d4d; color: #fff; }
+.top .r { display: flex; gap: 7px; align-items: center; }
+.pill { font-size: 12px; padding: 5px 11px; border: 1px solid var(--line);
+  border-radius: 99px; color: var(--mut); white-space: nowrap; }
+.pill.on { border-color: #46d39a; color: #46d39a; }
+.pill.bad { border-color: #ff7a7a; color: #ff7a7a; }
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px;
+  padding: 12px 18px 14px; min-height: 0; }
+.left { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; min-height: 0; min-width: 0; }
+.right { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; min-height: 0; }
+
+.board { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 8px 12px 4px; }
+.board-h { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 2px; }
+.board-h .t { font-size: 13px; color: #cdd5e6; }
+.legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--mut); flex-wrap: wrap; margin-left: auto; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.svgwrap { overflow: hidden; }
+#svg { width: 100%; height: auto; display: block; max-height: 36vh; }
+
+.lane { fill: #4d5470; font-size: 12px; font-weight: 600; letter-spacing: 1.2px; }
+.lanebg { fill: #ffffff04; }
+/* marker-end 是表现属性，可以用 CSS 覆盖：亮起时箭头跟着变色 */
+.edge { fill: none; stroke: #212637; stroke-width: 1.5; transition: stroke .2s; marker-end: url(#arw); }
+.edge.done { stroke: #5b6383; stroke-width: 2; marker-end: url(#arw-done); }
+.edge.cur { stroke: #fff; stroke-width: 2.6; stroke-dasharray: 6 5; animation: dash .6s linear infinite; marker-end: url(#arw-cur); }
+@keyframes dash { to { stroke-dashoffset: -22; } }
+.node { cursor: pointer; }
+.node rect { fill: #121521; stroke: var(--oc); stroke-width: 1.4; transition: .25s; }
+.node text { fill: #cfd5e4; font-size: 13px; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+.node .ow { font-size: 9.5px; fill: var(--oc); opacity: .95; }
+.node.dim { opacity: .2; }
+.node.done rect { fill: color-mix(in srgb, var(--oc) 16%, #121521); }
+.node.cur rect { fill: color-mix(in srgb, var(--oc) 40%, #121521); stroke: #fff; stroke-width: 2.4;
+  filter: drop-shadow(0 0 10px var(--oc)); }
+.node.cur text { fill: #fff; }
+.node.sel rect { stroke: #fff; stroke-dasharray: 4 3; }
+.node .cnt { font-size: 9px; fill: #9aa3b8; }
+
+.pane { border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.pane-h { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex: 0 0 auto;
+  border-bottom: 1px solid var(--line); font-size: 12.5px; color: #c3c9d8; }
+.pane-h .mut { color: var(--mut); font-size: 11.5px; }
+.pane-h .mut:first-of-type { margin-left: 0; }
+.live { font-size: 11.5px; color: var(--mut); display: flex; gap: 5px; align-items: center; cursor: pointer; margin-left: auto; }
+
+.steps { list-style: none; margin: 0; padding: 5px; overflow: auto; flex: 1; min-height: 0; }
+.steps li { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 8px; padding: 6px 9px;
+  border-radius: 8px; cursor: pointer; color: var(--mut); font-size: 12.5px; border-left: 2px solid transparent; }
+.steps li > div { min-width: 0; }
+.steps li:hover { background: #ffffff08; }
+.steps li.cur { background: #ffffff14; color: #fff; border-left-color: var(--oc); }
+.steps li em { font-style: normal; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #6d7590; }
+.steps li small { display: block; font-size: 10.5px; color: var(--oc); margin-bottom: 1px; }
+.steps li .out { display: block; color: #9aa3b8; font-size: 11px;
+  font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps li.empty { display: block; padding: 18px 14px; color: var(--mut); line-height: 1.7; cursor: default; }
+
+/* 渲染侧画面：小窗，16:9，固定高度不抢地方 */
+.mini { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; flex: 0 0 auto; }
+.mini #avatar-video { position: absolute; inset: 0; }
+/* Agora 会往这个 div 里插 <video>，父容器必须有确定尺寸，否则视频高度为 0 —— 这是之前黑屏的根因 */
+.mini #avatar-video video { width: 100% !important; height: 100% !important; object-fit: contain; }
+.ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #4d5470; font-size: 12px; }
+
+.art { overflow: hidden; }
+.art-inner { padding: 13px 15px; overflow: auto; flex: 1; min-height: 0; }
+.art .h { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.art h3 { font-size: 15.5px; margin: 0; }
+.art .tag { font-size: 10.5px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--oc, #8b7bff); color: var(--oc, #8b7bff); }
+.art .t { font-family: ui-monospace, Menlo, monospace; color: var(--mut); font-size: 11.5px; }
+.art .ms { font-size: 11.5px; color: #46d39a; font-family: ui-monospace, Menlo, monospace; }
+.art .no { color: #c3c9d8; margin: 7px 0 10px; font-size: 12.5px; line-height: 1.6; }
+.art .lbl { font-size: 10.5px; letter-spacing: 1px; color: var(--mut); margin: 11px 0 5px; }
+.art pre { background: #05060a; border: 1px solid #1a1e2c; border-radius: 9px; padding: 10px 11px;
+  font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #d6f5e3;
+  white-space: pre-wrap; word-break: break-all; max-height: 30vh; overflow: auto; margin: 0; }
+.art .desc { font-size: 12.5px; color: var(--mut); line-height: 1.75; }
+.art .desc b { color: #cdd5e6; }
+
+@media (max-width: 1080px) {
+  body.pl { overflow: auto; }
+  .app { height: auto; }
+  .main { grid-template-columns: 1fr; }
+  #svg { max-height: none; }
+  /* 窄屏会变成单列滚动，画面要是跟着排到下面，一滚出视口 Chrome 就停止渲染远端帧
+     （听得到声音、画面晚几秒才出来、看节点图时画面卡住）。所以窄屏固定成右下角浮窗。 */
+  .right { display: contents; }
+  .right > .pane:first-child { position: fixed; right: 12px; bottom: 12px; width: 268px; z-index: 40;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .6); }
+  .right > .pane:first-child .pane-h { padding: 6px 10px; font-size: 11.5px; }
+  .right > .pane:first-child .mini { max-height: none; }
+  .left { grid-template-rows: auto auto; }
+}
+
+/* 全文块：完整 prompt / messages 很长，给更高的上限并保留换行 */
+.art pre.full { max-height: 55vh; color: #e6e9f2; background: #070910; border-color: #23283a; }
+.fulls { margin-bottom: 6px; }
+.mini-btn { padding: 4px 10px; font-size: 11.5px; margin: 6px 0 2px; }

@@ -1,0 +1,39 @@
+# Sandbox Launcher 创建应用请求体模板
+# 提交：POST http://192.168.48.82:8090/api/v1/apps（AK/SK HMAC 签名，见飞书文档 §3）
+# 密钥全部走 env 注入，不进镜像。值请单独经安全渠道填入，不要提交本文件的真实版本到 Git。
+{
+  "name": "vidu-avatar-demo",
+  "image": "<镜像推送到 VPC 端点 ACR 后的地址：acr-ss-prod-registry-vpc.cn-beijing.cr.aliyuncs.com/<命名空间>/vidu-avatar:20261112>\n  （实测必须用 -vpc 端点；公网端点和 docker.io 沙箱都拉不到）",
+  "ports": [8444],
+  "start_command": "node server/server.js",
+  "env": {
+    "MODE": "component",
+    "PORT": "8444",
+    "HOST": "0.0.0.0",
+    "RESOLUTION": "720p",
+    "MODERATION": "disabled",
+    "RTC_PROVIDER": "trtc",
+    "ENABLE_RECORDING": "true",
+    "ACCESS_USER": "demo",
+    "ACCESS_PASSWORD": "<访问口令>",
+    "VIDU_API_KEY": "<Vidu 平台 key>",
+    "VIDU_HOST": "api.vidu.com",
+    "AVATAR_ID": "<杨幂形象ID>",
+    "JOHN_IMAGE_URI": "https://scene.cf.vidu.studio/media-asset/032625-EDrDpYGL9XhqMPwb.webp",
+    "JOHN_VOICE": "johnwick001",
+    "ANNE_AVATAR_ID": "<安妮形象ID>",
+    "ANNE_VOICE": "anne001test",
+    "LLM_BASE_URL": "<OpenAI 兼容网关>",
+    "LLM_API_KEY": "<LLM key>",
+    "LLM_MODEL": "deepseek-v4-flash",
+    "MINIMAX_API_KEY": "<MiniMax key>",
+    "MINIMAX_MODEL": "speech-2.8-turbo",
+    "MINIMAX_VOICE": "yangmitest1",
+    "TENCENT_SECRET_ID": "<腾讯云SecretId>",
+    "TENCENT_SECRET_KEY": "<腾讯云SecretKey>"
+  },
+  "cpu": 2,
+  "memory_mb": 4096,
+  "disk_mb": 20480,
+  "ttl_minutes": 480
+}
